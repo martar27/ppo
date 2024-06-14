@@ -1,0 +1,152 @@
+import gym
+from gym import spaces
+import numpy as np
+from stable_baselines3 import PPO
+from stable_baselines3.common.vec_env import DummyVecEnv
+
+class EmploymentEnv(gym.Env):
+    def __init__(self, policy):
+        super(EmploymentEnv, self).__init__()
+
+        # Define action space
+        self.action_space = spaces.Discrete(3)
+        
+        # Define observation space: state, financial reserve, skill level, unemployment duration
+        self.observation_space = spaces.Box(low=np.array([0, 0, 0, 0]), high=np.array([2, np.inf, 1000, 120]), dtype=np.float32)
+
+        # Initialize the agent's state
+        self.state = [2, 2700, 132, 0]  # initial state: state, financial_reserve, skill_level, unemployment_duration
+        self.salary_rate = 6.81  # constant salary rate, converts skill level to actual salary
+        self.policy = policy  # policy to follow
+        self.current_step = 0 # step counter to track the number of steps taken in an episode
+        self.max_steps_per_episode = 120  # the maximum steps per episode
+
+    def reset(self):
+        self.state = [2, 2700, 132, 0]  # Reset state: state, financial_reserve, skill_level, unemployment_duration
+        self.current_step = 0
+        return np.array(self.state, dtype=np.float32)
+
+    def step(self, action):
+        state, financial_reserve, skill_level, unemployment_duration = self.state
+
+        self.current_step += 1 # increment step counter by one step
+
+        # Calculate salary based on the current skill level
+        salary = self.salary_rate * skill_level
+
+        # Determine the new state based on the action
+        if state == 0:  # 'working_not_studying'
+            if action == 0:  # 'to_work'
+                new_state = 0
+            elif action == 1:  # 'to_study'
+                new_state = 1
+            elif action == 2:
+                new_state = 2
+            #else:  # 'to_search_for_job'
+            #    new_state = 2
+
+        elif state == 1:  # 'studying_not_working'
+            if action == 0:  # 'to_work'
+                new_state = 0
+            elif action == 1:  # 'to_study'
+                new_state = 1
+            elif action == 2:
+                new_state = 2
+            #else:  # 'to_search_for_job'
+            #    new_state = 2
+
+        elif state == 2: #'neither_working_nor_studying'
+            if action == 0:  # 'to_work'
+                new_state = 0
+            elif action == 1:  # 'to_study'
+                new_state = 1
+            elif action == 2:
+                new_state = 2
+            #else:  # 'to_search_for_job'
+            #    new_state = 2
+
+        # Calculate reward based on state transitions and update the state
+        financial_reserve, skill_level, unemployment_duration, reward = self.calculate_reward(
+            new_state, salary, financial_reserve, skill_level, unemployment_duration
+        )
+
+        # Update state
+        self.state = [new_state, financial_reserve, skill_level, unemployment_duration]
+
+        # Check for termination
+        terminated = False
+        #done = False
+        if financial_reserve <= 0 or self.current_step >= self.max_steps_per_episode:
+            terminated = True
+            #done = True
+
+        #return np.array(self.state, dtype=np.float32), reward, done, {}
+        return np.array(self.state, dtype=np.float32), reward, terminated, {}
+
+    def calculate_reward(self, new_state, salary, financial_reserve, skill_level, unemployment_duration):
+        if new_state == 0:  # working_not_studying
+            salary = (self.salary_rate * skill_level + self.salary_rate * dE1)  # skill-based salary component plus skill improvement based salary component
+            financial_reserve += (salary - living_costs)  # update financial reserve based on salary and living costs
+            skill_level += dE1  # while working, skill level increases per each timestep / month
+            reward = (salary - living_costs)  # reward per timestep / month equals the net of salary and living costs; this is the addition to financial reserve
+
+        else:  # either studying_not_working or neither_working_nor_studying --> for both, calculate benefits
+            if unemployment_duration <= self.policy['durations'][0]:
+                benefit_rate = self.policy['benefit_rates'][0]
+            elif unemployment_duration > self.policy['durations'][0] and unemployment_duration <= self.policy['durations'][1]:
+                benefit_rate = self.policy['benefit_rates'][1]
+            else:
+                benefit_rate = self.policy['benefit_rates'][2]
+
+            benefit = (benefit_rate * salary)
+            financial_reserve += (benefit - living_costs)
+
+            if new_state == 1:  # studying_not_working
+                skill_level += dE2  # skill level increases more while studying
+            else:  # neither_working_nor_studying
+                skill_level -= dE1  # skill level decreases while neither working nor studying at the same rate that it increases while working
+
+            unemployment_duration += 1  # increment unemployment duration
+            reward = (benefit - living_costs)  # reward is net addition to financial reserve
+
+        return financial_reserve, skill_level, unemployment_duration, reward
+
+# Global variables
+living_costs = 800
+dE1 = 0  # skill level increment for working; depending on status, skill level increases or decreases by this increment
+dE2 = 0.6  # skill level increment for studying; skill level only increases by this increment while studying
+
+policies = {
+    'generous': {'benefit_rates': [0.8, 0.6, 0.5, 0.5],
+                 'durations': [12, 24, 36, np.inf]},
+    'average': {'benefit_rates': [0.8, 0.5, 0.25, 0],
+                'durations': [12, 24, 36, np.inf]},
+    'strict': {'benefit_rates': [0.8, 0.5, 0.25, 0],
+               'durations': [4, 8, 12, np.inf]},
+    'universal_income': {'benefit_rates': [0.35, 0.35, 0.35, 0.35],
+               'durations': [4, 8, 12, np.inf]}
+}
+
+policy = policies['average']
+env = EmploymentEnv(policy)
+env = DummyVecEnv([lambda: env])
+
+print(f"Policy: {policy}")
+print(f"Environment Action Space: {env.action_space}")
+print(f"Environment Observation Space: {env.observation_space}")
+
+model = PPO("MlpPolicy", env, verbose=1, learning_rate=0.01, ent_coef = 0.8)
+model.learn(total_timesteps=12000) # the total timesteps for the model to take during training
+model.save("ppo_employment")
+
+# Load and evaluate the model
+model = PPO.load("ppo_employment")
+obs = env.reset()
+for i in range(120):
+    action, _states = model.predict(obs, deterministic=True)
+    obs, rewards, terminated, info = env.step(action)
+    #obs, rewards, done, info = env.step(action)
+    print(f"Step {i+1} - Action: {action}, State: {obs}, Reward: {rewards}")
+    if terminated:
+    #if done:
+        break
